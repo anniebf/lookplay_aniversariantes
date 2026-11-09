@@ -1,0 +1,6 @@
+fastapi>=0.115
+uvicorn>=0.30
+requests>=2.32
+beautifulsoup4>=4.12
+python-dotenv>=1.0
+oracledb>=3.0

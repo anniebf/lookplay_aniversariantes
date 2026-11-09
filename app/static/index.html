@@ -1,0 +1,609 @@
+<!doctype html>
+<!--
+  Dashboard de gerência do RPA que alimenta a TV com os aniversariantes de vida e de empresa.
+
+  A tela responde a três perguntas, nesta ordem:
+    1. Quando o robô rodou e como terminou?               -> "Execuções"
+    2. Quem tem aniversariante mas não existe no Lookplay? -> "Fora do Lookplay"
+    3. Quem são os aniversariantes de cada filial?         -> tabela "Filiais"; clique para abrir
+
+  A página só conversa com a API (/api/...). Guarda o que recebeu em "estado" e redesenha a
+  tela com as funções desenhar*. Durante uma execução, consulta a API a cada 2 segundos;
+  fora disso, a cada 10 segundos. Na tela, "Empresa" é o tipo "casa" da API.
+
+  Segurança: todo dado entra por textContent (função el), nunca como HTML, para que um valor
+  vindo do banco não execute código na página.
+-->
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RPA Aniversariantes</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    color-scheme: light;
+    --fundo: #f4f6f5; --superficie: #ffffff; --tinta: #16241f; --tinta-2: #56675f; --linha: #dde4e0;
+    --acao: #17533e; --acao-tinta: #ffffff; --realce: #e8f0ec;
+    --vida: #a8336b; --casa: #1c6d9a;
+    --ok: #17703f; --alerta: #8a5700; --erro: #b3261e; --pendente: #1c6d9a; --neutro: #5a6b65;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --fundo: #101a17; --superficie: #17231f; --tinta: #e6efeb; --tinta-2: #a0b2aa; --linha: #2a3a33;
+      --acao: #6fd0a6; --acao-tinta: #0c1f18; --realce: #20322b;
+      --vida: #f08abc; --casa: #6dbde8;
+      --ok: #6fd69c; --alerta: #eeb64f; --erro: #ff9c94; --pendente: #6dbde8; --neutro: #a0b2aa;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--fundo); color: var(--tinta); font: 14px/1.45 "Segoe UI", system-ui, -apple-system, Roboto, sans-serif; }
+  h1 { font-size: 1.35rem; font-weight: 600; margin: 0; }
+  h2 { font-size: 1rem; font-weight: 600; margin: 0; }
+  h3 { font-size: .92rem; font-weight: 600; margin: 0; }
+  p { margin: 0; }
+  button, input { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--acao); outline-offset: 2px; }
+
+  .pagina { max-width: 1240px; margin: 0 auto; padding: 18px 20px 32px; display: grid; gap: 14px; }
+  .topo { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
+  .fraco { color: var(--tinta-2); font-size: .86rem; }
+  .acoes { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .botao { min-height: 34px; padding: 4px 12px; cursor: pointer; font-weight: 600; border: 1px solid var(--linha); border-radius: 6px; background: var(--superficie); }
+  .botao:hover:not(:disabled) { border-color: var(--acao); }
+  .botao:disabled { opacity: .5; cursor: not-allowed; }
+  .botao.principal { background: var(--acao); border-color: var(--acao); color: var(--acao-tinta); }
+  .botao.mini { min-height: 28px; padding: 1px 9px; font-size: .84rem; }
+  .link { padding: 0; background: none; border: 0; cursor: pointer; font-weight: 600; font-size: .86rem; color: var(--tinta-2); }
+  .link:hover { color: var(--tinta); text-decoration: underline; }
+
+  .aviso { padding: 7px 12px; border-left: 3px solid var(--alerta); background: var(--superficie); }
+  .aviso.erro { border-color: var(--erro); }
+  .barra { height: 4px; background: var(--linha); margin-top: 6px; overflow: hidden; }
+  .barra i { display: block; height: 100%; background: var(--acao); transition: width .4s; }
+
+  .cartao { background: var(--superficie); border: 1px solid var(--linha); border-radius: 6px; min-width: 0; }
+  .cartao-topo { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--linha); }
+  .duas { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 14px; align-items: start; }
+  .rolagem { overflow-x: auto; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-weight: 600; font-size: .82rem; color: var(--tinta-2); padding: 7px 14px; border-bottom: 1px solid var(--linha); white-space: nowrap; }
+  td { padding: 7px 14px; border-top: 1px solid var(--linha); vertical-align: middle; }
+  thead + tbody tr:first-child td { border-top: 0; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .zero { color: var(--tinta-2); }
+  .sem-quebra { white-space: nowrap; }
+
+  .ponto { display: inline-block; flex: none; width: 15px; height: 15px; vertical-align: -2px; margin-right: 4px; -webkit-mask: center / contain no-repeat; mask: center / contain no-repeat; }
+  .ponto.vida { background: var(--vida); -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 1c1.2 1.4 1.6 2.3 1.6 3a1.6 1.6 0 0 1-3.2 0c0-.7.4-1.6 1.6-3zM11 7h2v4h-2zM5 11h14a2 2 0 0 1 2 2v3c-1.5 1.2-3 1.2-4.5 0-1.5 1.2-3 1.2-4.5 0-1.5 1.2-3 1.2-4.5 0-1.5 1.2-3 1.2-4.5 0v-3a2 2 0 0 1 2-2zM3 18.5c1.5.8 3 .8 4.5 0 1.5.8 3 .8 4.5 0 1.5.8 3 .8 4.5 0 1.5.8 3 .8 4.5 0V23H3z'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 1c1.2 1.4 1.6 2.3 1.6 3a1.6 1.6 0 0 1-3.2 0c0-.7.4-1.6 1.6-3zM11 7h2v4h-2zM5 11h14a2 2 0 0 1 2 2v3c-1.5 1.2-3 1.2-4.5 0-1.5 1.2-3 1.2-4.5 0-1.5 1.2-3 1.2-4.5 0-1.5 1.2-3 1.2-4.5 0v-3a2 2 0 0 1 2-2zM3 18.5c1.5.8 3 .8 4.5 0 1.5.8 3 .8 4.5 0 1.5.8 3 .8 4.5 0 1.5.8 3 .8 4.5 0V23H3z'/%3E%3C/svg%3E"); }
+  .ponto.casa { background: var(--casa); -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2 1 12h3v10h6v-7h4v7h6V12h3z'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2 1 12h3v10h6v-7h4v7h6V12h3z'/%3E%3C/svg%3E"); }
+
+  /* Situação: sempre ícone + texto, nunca só a cor. */
+  .selo { display: inline-flex; gap: 5px; align-items: baseline; font-weight: 600; font-size: .86rem; white-space: nowrap; color: var(--cor); }
+  .cor-erro, .cor-falhou { --cor: var(--erro); } .cor-sem_conteudo, .cor-interrompida, .cor-concluida_com_erros { --cor: var(--alerta); }
+  .cor-nao_rodou, .cor-em_andamento { --cor: var(--pendente); } .cor-enviado, .cor-concluida { --cor: var(--ok); } .cor-sem_aniversariantes { --cor: var(--neutro); }
+  .cor-sem_aniversariantes.selo { font-weight: 400; }
+
+  .fora { list-style: none; margin: 0; padding: 0; max-height: 268px; overflow: auto; }
+  .fora li + li { border-top: 1px solid var(--linha); }
+  .fora-item { display: flex; gap: 12px; justify-content: space-between; align-items: baseline; width: 100%; padding: 7px 14px; text-align: left; background: none; border: 0; cursor: pointer; }
+  .fora-item:hover { background: var(--realce); }
+  .fora-item b { font-weight: 600; }
+  .vazio { padding: 12px 14px; color: var(--tinta-2); }
+
+  .abas { display: flex; flex-wrap: wrap; gap: 4px; }
+  .aba { padding: 3px 10px; background: none; border: 1px solid transparent; border-radius: 6px; cursor: pointer; color: var(--tinta-2); font-size: .86rem; }
+  .aba:hover { background: var(--realce); }
+  .aba[aria-pressed="true"] { background: var(--realce); border-color: var(--linha); color: var(--tinta); font-weight: 600; }
+  .busca { width: 220px; min-height: 32px; padding: 3px 9px; background: var(--fundo); border: 1px solid var(--linha); border-radius: 6px; }
+
+  .linha-filial { cursor: pointer; }
+  .linha-filial:hover td { background: var(--realce); }
+  .linha-filial[aria-expanded="true"] td { background: var(--realce); }
+  .abre { all: unset; cursor: pointer; font-weight: 600; }
+  .abre:focus-visible { outline: 2px solid var(--acao); outline-offset: 2px; }
+  .seta { display: inline-block; width: 14px; color: var(--tinta-2); font-size: .72rem; }
+  .tag { margin-left: 6px; padding: 0 5px; font-size: .72rem; font-weight: 600; border-radius: 3px; background: var(--acao); color: var(--acao-tinta); }
+  .mes { color: var(--tinta-2); font-size: .8rem; font-weight: 400; }
+
+  .mensagem-filial { margin-bottom: 10px; padding: 7px 10px; border-left: 3px solid var(--alerta); background: var(--superficie); font-weight: 600; }
+  .log { margin-bottom: 10px; background: var(--superficie); border: 1px solid var(--linha); border-radius: 6px; }
+  .log-topo { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; justify-content: space-between; padding: 7px 12px; border-bottom: 1px solid var(--linha); }
+  .log-linhas { list-style: none; margin: 0; padding: 4px 12px; max-height: 150px; overflow: auto; font-size: .86rem; }
+  .log-linhas li { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 8px; padding: 2px 0; }
+  .log-linhas time { color: var(--tinta-2); font-variant-numeric: tabular-nums; }
+  .girando { display: inline-block; animation: girar 1.2s linear infinite; }
+  @keyframes girar { to { transform: rotate(360deg); } }
+  .abertura > td { padding: 2px 14px 14px; background: var(--realce); border-top: 0; }
+  .colunas { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+  .coluna { background: var(--superficie); border: 1px solid var(--linha); border-radius: 6px; padding: 10px 12px; min-width: 0; }
+  .coluna-topo { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+  .estado { margin: 6px 0 8px; font-size: .86rem; color: var(--tinta-2); }
+  .estado .selo { margin-right: 4px; }
+  .pessoas { list-style: none; margin: 0; padding: 0; }
+  .pessoas li { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; padding: 4px 0; border-top: 1px solid var(--linha); }
+  .pessoas b { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .pessoas small { color: var(--tinta-2); }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; font-size: .84rem; font-weight: 600; color: var(--tinta-2); padding: 2px 0; }
+
+  dialog { border: 1px solid var(--linha); border-radius: 6px; background: var(--superficie); color: var(--tinta); padding: 18px; max-width: 420px; }
+  dialog::backdrop { background: rgb(0 0 0 / .45); }
+  dialog p { margin: .5rem 0 1rem; }
+
+  @media (max-width: 900px) { .duas { grid-template-columns: minmax(0, 1fr); } .busca { width: 100%; } }
+  @media (max-width: 640px) {
+    .pagina { padding: 14px 12px 24px; }
+    th, td { padding-left: 10px; padding-right: 10px; }
+    .col-envio, .col-acao { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div class="pagina">
+  <header class="topo">
+    <div>
+      <h1>RPA Aniversariantes</h1>
+      <p class="fraco" id="subtitulo">Carregando…</p>
+    </div>
+    <div class="acoes">
+      <button class="botao principal" id="rodar-todas">Rodar todas as filiais</button>
+    </div>
+  </header>
+
+  <div id="avisos" aria-live="polite" style="display:grid;gap:8px"></div>
+
+  <div class="duas">
+    <section class="cartao">
+      <div class="cartao-topo"><h2>Execuções</h2><button class="link" id="ver-execucoes"></button></div>
+      <div class="rolagem">
+        <table>
+          <thead><tr><th>Início</th><th>O que rodou</th><th class="num">Duração</th><th>Resultado</th></tr></thead>
+          <tbody id="execucoes"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="cartao">
+      <div class="cartao-topo"><h2 id="titulo-fora">Fora do Lookplay</h2></div>
+      <div id="fora"></div>
+    </section>
+  </div>
+
+  <section class="cartao" id="secao-filiais">
+    <div class="cartao-topo">
+      <div class="abas" id="filtros" role="group" aria-label="Filtrar filiais"></div>
+      <input class="busca" type="search" id="busca" placeholder="Buscar filial" aria-label="Buscar filial">
+    </div>
+    <div class="rolagem">
+      <table>
+        <thead><tr>
+          <th>Filial</th>
+          <th class="num"><i class="ponto vida"></i>Vida na semana</th>
+          <th class="num"><i class="ponto casa"></i>Empresa na semana</th>
+          <th class="col-envio">Último envio</th>
+          <th>Situação</th>
+          <th class="col-acao"></th>
+        </tr></thead>
+        <tbody id="filiais"></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<dialog id="confirmar">
+  <h2>Rodar todas as filiais?</h2>
+  <p id="confirmar-texto"></p>
+  <div class="acoes">
+    <button class="botao principal" id="confirmar-sim">Rodar todas as filiais</button>
+    <button class="botao" id="confirmar-nao">Cancelar</button>
+  </div>
+</dialog>
+
+<script>
+"use strict";
+
+// Filial em destaque, no topo da lista. Vem do .env (FILIAL_MATRIZ) pela API.
+const matriz = () => estado.status?.filial_matriz || "";
+const TIPOS = { vida: "Vida", casa: "Empresa" };
+const SITUACOES = {
+  erro: ["✕", "Com erro"],
+  sem_conteudo: ["!", "Fora do Lookplay"],
+  nao_rodou: ["○", "Não rodou"],
+  enviado: ["✓", "Enviada"],
+  sem_aniversariantes: ["–", "Sem aniversariantes"],
+};
+const EXECUCOES = {
+  em_andamento: ["○", "Em andamento"], concluida: ["✓", "Concluída"], concluida_com_erros: ["!", "Com pendências"],
+  falhou: ["✕", "Falhou"], interrompida: ["!", "Interrompida"],
+};
+const FILTROS = [
+  ["todas", "Todas", () => true],
+  ["com", "Com aniversariantes", (f) => f.tipos.vida.semana + f.tipos.casa.semana > 0],
+  ["nao_rodou", "Não rodaram", (f) => f.situacao === "nao_rodou"],
+  ["erro", "Com erro", (f) => f.situacao === "erro"],
+  ["sem_conteudo", "Fora do Lookplay", (f) => f.situacao === "sem_conteudo"],
+];
+
+// ---------- Estado da tela ----------
+const estado = {
+  status: null, visao: null, execucoes: [], erro: null,
+  filtro: "todas", busca: "", todasExecucoes: false,
+  aberta: null, pessoas: [], enviados: null, log: null, dobras: new Set(),
+  aviso: null, // { filial, texto }: conflito ao tentar rodar; filial=null aparece no topo
+};
+
+// ---------- Utilitários ----------
+
+// Cria um elemento. Texto sempre via append, para impedir injeção de HTML.
+function el(tag, props = {}, ...filhos) {
+  const elemento = document.createElement(tag);
+  for (const [chave, valor] of Object.entries(props)) {
+    if (chave === "class") elemento.className = valor;
+    else if (chave.startsWith("on")) elemento.addEventListener(chave.slice(2), valor);
+    else if (valor !== false && valor != null) elemento.setAttribute(chave, valor === true ? "" : valor);
+  }
+  for (const filho of filhos) if (filho != null) elemento.append(filho);
+  return elemento;
+}
+
+async function api(caminho, opcoes) {
+  const resposta = await fetch(caminho, opcoes);
+  if (!resposta.ok) {
+    const corpo = await resposta.json().catch(() => ({}));
+    throw new Error(corpo.detail || `A API respondeu com erro ${resposta.status}.`);
+  }
+  return resposta.json();
+}
+
+const dataHora = (iso) => iso ? new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "–";
+const plural = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
+const rota = (filial, fim) => `/api/filiais/${encodeURIComponent(filial)}/${fim}`;
+const ocupado = () => Boolean(estado.status?.em_andamento);
+const selo = ([icone, texto], chave) => el("span", { class: `selo cor-${chave}` }, el("span", { "aria-hidden": "true" }, icone), texto);
+
+function duracao(inicio, fim) {
+  if (!fim) return "–";
+  const segundos = Math.max(0, Math.round((new Date(fim) - new Date(inicio)) / 1000));
+  return segundos < 60 ? `${segundos} s` : `${Math.floor(segundos / 60)} min ${segundos % 60} s`;
+}
+
+function ultimoEnvio(filial) {
+  return [filial.tipos.vida.ultimo?.ultimo_envio, filial.tipos.casa.ultimo?.ultimo_envio].filter(Boolean).sort().at(-1) || null;
+}
+
+// Filiais com aniversariantes em um tipo cujo conteúdo não existe no Lookplay.
+const filiaisFora = () => (estado.visao?.filiais || []).filter((f) =>
+  ["vida", "casa"].some((t) => f.tipos[t].no_lookplay === false && f.tipos[t].total_enviado > 0));
+
+// ---------- Cabeçalho e avisos ----------
+
+function desenharCabecalho() {
+  const ultima = estado.execucoes.find((e) => e.fim);
+  const dados = estado.visao ? `Dados de ${dataHora(estado.visao.atualizado_em)}. ` : "";
+  const proximo = estado.status?.proximo_envio_automatico;
+  document.getElementById("subtitulo").textContent = dados + (ultima ? `Última execução em ${dataHora(ultima.fim)}.` : "Nenhuma execução registrada.")
+    + (proximo ? ` Próximo envio automático: ${dataHora(proximo)}.` : " Envio automático desligado.");
+}
+
+function desenharAvisos() {
+  const area = document.getElementById("avisos");
+  area.replaceChildren();
+  if (estado.erro) area.append(el("div", { class: "aviso erro" }, estado.erro));
+  if (estado.aviso && !estado.aviso.filial) area.append(el("div", { class: "aviso" }, estado.aviso.texto));
+  if (estado.status?.modo === "exemplo") area.append(el("div", { class: "aviso" }, "Modo exemplo: as pessoas são fictícias e nada é enviado ao Lookplay."));
+  if (estado.visao && !estado.visao.lookplay_consultado) {
+    area.append(el("div", { class: "aviso erro" }, "Não foi possível consultar o Lookplay. A lista “Fora do Lookplay” pode estar incompleta. Confira o cookie ou a senha no .env."));
+  }
+  // Rodada de uma filial aparece abaixo dela. Só a rodada geral mostra o progresso no topo.
+  const ativa = estado.status?.em_andamento;
+  if (ativa && !ativa.filial) {
+    const feitos = Object.values(ativa.contagem).reduce((a, b) => a + b, 0);
+    const total = (ativa.filial ? 1 : estado.visao?.filiais.length || 1) * (ativa.tipo === "ambos" ? 2 : 1);
+    area.append(el("div", { class: "aviso", style: "border-color:var(--acao)" },
+      `Rodando todas as filiais: ${feitos} de ${total}${ativa.filial_atual ? `, agora em ${ativa.filial_atual}` : ""}`,
+      el("div", { class: "barra" }, el("i", { style: `width:${Math.min(100, feitos / total * 100)}%` })),
+    ));
+  }
+}
+
+// ---------- Execuções ----------
+
+function textoDoResultado(e) {
+  const c = e.contagem;
+  return [
+    c.enviado && plural(c.enviado, "enviado", "enviados"),
+    c.sem_conteudo && `${c.sem_conteudo} fora do Lookplay`,
+    c.erro && plural(c.erro, "erro", "erros"),
+    e.mensagem,
+  ].filter(Boolean).join(", ");
+}
+
+function desenharExecucoes() {
+  const corpo = document.getElementById("execucoes");
+  const limite = estado.todasExecucoes ? 20 : 6;
+  const botao = document.getElementById("ver-execucoes");
+  botao.hidden = estado.execucoes.length <= 6;
+  botao.textContent = estado.todasExecucoes ? "Ver menos" : "Ver todas";
+  corpo.replaceChildren();
+  if (!estado.execucoes.length) {
+    corpo.append(el("tr", {}, el("td", { colspan: 4, class: "fraco" }, "Nenhuma execução ainda. Use “Rodar todas as filiais” para fazer a primeira.")));
+    return;
+  }
+  for (const e of estado.execucoes.slice(0, limite)) {
+    const tipo = e.tipo === "ambos" ? "vida e empresa" : TIPOS[e.tipo].toLowerCase();
+    const resultado = textoDoResultado(e);
+    corpo.append(el("tr", {},
+      el("td", { class: "sem-quebra" }, dataHora(e.inicio)),
+      el("td", {}, `${e.filial || "Todas as filiais"}, ${tipo}${e.origem === "agendamento" ? " (automático)" : ""}`),
+      el("td", { class: "num" }, duracao(e.inicio, e.fim)),
+      el("td", {}, selo(EXECUCOES[e.status] || ["", e.status], e.status), resultado ? el("div", { class: "fraco" }, resultado) : null),
+    ));
+  }
+}
+
+// ---------- Fora do Lookplay ----------
+
+function desenharFora() {
+  const caixa = document.getElementById("fora");
+  // Guarda a rolagem: a atualização automática não pode fazer a lista voltar ao topo.
+  const rolagem = caixa.querySelector(".fora")?.scrollTop ?? 0;
+  const fora = filiaisFora();
+  document.getElementById("titulo-fora").textContent = fora.length ? `Fora do Lookplay: ${plural(fora.length, "filial", "filiais")}` : "Fora do Lookplay";
+  if (!estado.visao?.lookplay_consultado) {
+    caixa.replaceChildren(el("p", { class: "vazio" }, "Consulta ao Lookplay indisponível."));
+    return;
+  }
+  if (!fora.length) {
+    caixa.replaceChildren(el("p", { class: "vazio" }, "Todas as filiais com aniversariantes existem no Lookplay."));
+    return;
+  }
+  caixa.replaceChildren(
+    el("p", { class: "fraco", style: "padding:8px 14px 6px" }, "Têm aniversariantes no banco, mas não têm conteúdo cadastrado. Enquanto isso, não aparecem na TV."),
+    el("ul", { class: "fora" }, ...fora.map((f) => {
+      const faltam = ["vida", "casa"].filter((t) => f.tipos[t].no_lookplay === false && f.tipos[t].total_enviado > 0)
+        .map((t) => `${f.tipos[t].total_enviado} ${TIPOS[t].toLowerCase()}`).join(", ");
+      return el("li", {}, el("button", { class: "fora-item", onclick: () => abrirNaTabela(f.filial) }, el("b", {}, f.filial), el("span", { class: "fraco sem-quebra" }, faltam)));
+    })),
+  );
+  caixa.querySelector(".fora").scrollTop = rolagem;
+}
+
+// ---------- Filiais ----------
+
+function filiaisVisiveis() {
+  const termo = estado.busca.trim().toLowerCase();
+  const passa = FILTROS.find(([chave]) => chave === estado.filtro)[2];
+  return (estado.visao?.filiais || [])
+    .filter((f) => passa(f) && (!termo || f.filial.toLowerCase().includes(termo)))
+    .sort((a, b) => (b.filial === matriz()) - (a.filial === matriz())); // matriz primeiro; o resto vem em ordem alfabética
+}
+
+function desenharFiltros() {
+  const caixa = document.getElementById("filtros");
+  caixa.replaceChildren();
+  for (const [chave, nome, passa] of FILTROS) {
+    const total = (estado.visao?.filiais || []).filter(passa).length;
+    caixa.append(el("button", {
+      class: "aba", "aria-pressed": String(estado.filtro === chave),
+      onclick: () => { estado.filtro = chave; desenharFiltros(); desenharFiliais(); },
+    }, `${nome} (${total})`));
+  }
+}
+
+function celulaConta(valor, mes) {
+  return el("td", { class: `num${valor || mes ? "" : " zero"}` }, String(valor), mes > valor ? el("span", { class: "mes" }, ` de ${mes} no mês`) : null);
+}
+
+const rodandoAgora = (filial) => {
+  const ativa = estado.status?.em_andamento;
+  return Boolean(ativa) && (ativa.filial === filial || (!ativa.filial && ativa.filial_atual === filial));
+};
+
+function desenharFiliais() {
+  const corpo = document.getElementById("filiais");
+  corpo.replaceChildren();
+  if (!estado.visao) {
+    corpo.append(el("tr", {}, el("td", { colspan: 6, class: "fraco" }, "As filiais aparecem aqui quando o banco de dados responder.")));
+    return;
+  }
+  const visiveis = filiaisVisiveis();
+  if (!visiveis.length) {
+    corpo.append(el("tr", {}, el("td", { colspan: 6, class: "fraco" }, "Nenhuma filial encontrada. Limpe a busca ou escolha outro filtro.")));
+    return;
+  }
+  for (const f of visiveis) {
+    const aberta = estado.aberta === f.filial;
+    corpo.append(el("tr", { class: "linha-filial", "aria-expanded": String(aberta), onclick: () => alternar(f.filial) },
+      el("td", {},
+        el("span", { class: "seta", "aria-hidden": "true" }, aberta ? "▼" : "▶"),
+        el("button", { class: "abre", "aria-expanded": String(aberta), onclick: (ev) => { ev.stopPropagation(); alternar(f.filial); } }, f.filial),
+        matriz() && f.filial === matriz() ? el("span", { class: "tag" }, "Matriz") : null,
+      ),
+      celulaConta(f.tipos.vida.semana, f.tipos.vida.total_enviado),
+      celulaConta(f.tipos.casa.semana, f.tipos.casa.total_enviado),
+      el("td", { class: "col-envio sem-quebra fraco" }, dataHora(ultimoEnvio(f))),
+      el("td", {}, rodandoAgora(f.filial)
+        ? el("span", { class: "selo cor-em_andamento" }, el("span", { class: "girando", "aria-hidden": "true" }, "◌"), "Rodando")
+        : selo(SITUACOES[f.situacao], f.situacao)),
+      el("td", { class: "col-acao num" }, el("button", {
+        class: "botao mini", onclick: (ev) => { ev.stopPropagation(); rodar("ambos", f.filial); },
+        "aria-label": `Rodar ${f.filial}`,
+      }, "Rodar")),
+    ));
+    if (aberta) corpo.append(linhaAberta(f));
+  }
+  // Mantém visível a linha mais recente do log.
+  const linhas = corpo.querySelector(".log-linhas");
+  if (linhas) linhas.scrollTop = linhas.scrollHeight;
+}
+
+function listaPessoas(pessoas) {
+  return el("ul", { class: "pessoas" }, ...pessoas.map((p) => el("li", {},
+    el("b", {}, p.dia),
+    el("span", {}, p.nome, el("br"), el("small", {}, p.anos_de_casa ? `${p.secao}, ${plural(p.anos_de_casa, "ano", "anos")} de empresa` : p.secao)),
+  )));
+}
+
+// <details> que continua aberto quando a tela é redesenhada pela atualização automática.
+function dobra(chave, titulo, conteudo) {
+  const elemento = el("details", { open: estado.dobras.has(chave) }, el("summary", {}, titulo), conteudo);
+  elemento.addEventListener("toggle", () => { elemento.open ? estado.dobras.add(chave) : estado.dobras.delete(chave); });
+  return elemento;
+}
+
+function frase(f, tipo) {
+  const d = f.tipos[tipo];
+  const u = d.ultimo;
+  const frases = {
+    enviado: `em ${dataHora(u?.ultimo_envio)}, ${plural(u?.quantidade ?? 0, "pessoa", "pessoas")}.`,
+    // Sem ninguém na semana, a pendência só pode vir do restante do mês (tipo empresa).
+    nao_rodou: `nesta semana. ${d.semana
+      ? `${plural(d.semana, "pessoa faz", "pessoas fazem")} aniversário.`
+      : `${plural(d.total_enviado, "pessoa faz", "pessoas fazem")} aniversário neste mês.`}`,
+    sem_aniversariantes: "",
+    sem_conteudo: "Cadastre o conteúdo com o nome exato da filial e rode de novo.",
+    erro: u?.mensagem || "",
+  };
+  return frases[d.situacao];
+}
+
+function colunaTipo(f, tipo) {
+  const doTipo = estado.pessoas.filter((p) => p.tipo === tipo);
+  const semana = doTipo.filter((p) => p.na_semana);
+  const resto = doTipo.filter((p) => !p.na_semana);
+  const envio = estado.enviados?.[tipo];
+  return el("div", { class: "coluna" },
+    el("div", { class: "coluna-topo" },
+      el("h3", {}, el("i", { class: `ponto ${tipo}`, "aria-hidden": "true" }), TIPOS[tipo]),
+      el("button", { class: "botao mini", onclick: () => rodar(tipo, f.filial) }, `Rodar ${TIPOS[tipo].toLowerCase()}`),
+    ),
+    el("p", { class: "estado" }, selo(SITUACOES[f.tipos[tipo].situacao], f.tipos[tipo].situacao), frase(f, tipo)),
+    semana.length ? listaPessoas(semana) : el("p", { class: "fraco" }, "Ninguém nesta semana."),
+    resto.length ? dobra(`${tipo}-mes`, `Restante do mês (${resto.length})`, listaPessoas(resto)) : null,
+    envio?.pessoas.length ? dobra(`${tipo}-env`, `Enviados em ${dataHora(envio.horario)} (${envio.pessoas.length})`, listaPessoas(envio.pessoas)) : null,
+  );
+}
+
+// Log da execução, logo abaixo da filial: o usuário acompanha sem precisar subir a página.
+function blocoLog() {
+  const log = estado.log;
+  if (!log) return null;
+  const rodando = log.status === "em_andamento";
+  return el("div", { class: "log" },
+    el("div", { class: "log-topo" },
+      el("h3", {}, rodando ? "Execução em andamento" : `Última execução: ${dataHora(log.inicio)}`),
+      rodando
+        ? el("span", { class: "selo cor-em_andamento" }, el("span", { class: "girando", "aria-hidden": "true" }, "◌"), "Rodando")
+        : selo(EXECUCOES[log.status] || ["", log.status], log.status),
+    ),
+    log.eventos.length
+      ? el("ol", { class: "log-linhas", "aria-live": "polite" }, ...log.eventos.map((e) => el("li", {},
+          el("time", {}, new Date(e.horario).toLocaleTimeString("pt-BR")), el("span", {}, e.mensagem))))
+      : el("p", { class: "fraco", style: "padding:6px 12px" }, "Aguardando os primeiros passos."),
+  );
+}
+
+function linhaAberta(f) {
+  const mensagem = estado.aviso?.filial === f.filial ? el("div", { class: "mensagem-filial", role: "alert" }, estado.aviso.texto) : null;
+  return el("tr", { class: "abertura" }, el("td", { colspan: 6 },
+    mensagem, blocoLog(),
+    el("div", { class: "colunas" }, colunaTipo(f, "vida"), colunaTipo(f, "casa")),
+  ));
+}
+
+// ---------- Ações ----------
+
+async function buscarAberta() {
+  const filial = estado.aberta;
+  if (!filial) return;
+  const [pessoas, enviados, log] = await Promise.all([api(rota(filial, "aniversariantes")), api(rota(filial, "enviados")), api(rota(filial, "log"))]);
+  if (estado.aberta === filial) { estado.pessoas = pessoas; estado.enviados = enviados; estado.log = log; } // ignora resposta de filial já fechada
+}
+
+async function alternar(filial) {
+  estado.aberta = estado.aberta === filial ? null : filial;
+  estado.pessoas = [];
+  estado.enviados = null;
+  estado.log = null;
+  estado.dobras.clear();
+  desenharFiliais();
+  try {
+    await buscarAberta();
+    estado.erro = null;
+  } catch (erro) {
+    estado.erro = erro.message;
+    desenharAvisos();
+  }
+  desenharFiliais();
+}
+
+// Vem da lista "Fora do Lookplay": mostra a filial na tabela, mesmo que o filtro atual a esconda.
+async function abrirNaTabela(filial) {
+  estado.filtro = "todas";
+  estado.busca = "";
+  document.getElementById("busca").value = "";
+  desenharFiltros();
+  if (estado.aberta !== filial) await alternar(filial); else desenharFiliais();
+  document.getElementById("secao-filiais").scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
+async function rodar(tipo, filial) {
+  // Abre a filial antes de rodar: o andamento ou a mensagem de conflito aparecem logo abaixo dela.
+  if (filial && estado.aberta !== filial) await alternar(filial);
+  try {
+    await api("/api/execucoes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tipo, filial }) });
+    estado.aviso = null;
+  } catch (erro) {
+    // Conflito: a API responde dizendo o que já está rodando e em qual filial.
+    estado.aviso = { filial, texto: erro.message };
+  }
+  await carregar();
+}
+
+// ---------- Atualização automática ----------
+
+// Execuções e situações são sempre atuais. Os dados do Oracle e do Lookplay vêm do cache da API,
+// para que a atualização frequente não gere uma consulta ao banco a cada 10 segundos.
+const INTERVALO_NORMAL_MS = 10000;
+const INTERVALO_RODANDO_MS = 2000;
+let temporizador = null;
+
+async function carregar() {
+  clearTimeout(temporizador);
+  try {
+    estado.status = await api("/api/status");
+    estado.execucoes = await api("/api/execucoes?limite=20");
+    estado.visao = await api("/api/filiais");
+    await buscarAberta();
+    estado.erro = null;
+    if (!ocupado()) estado.aviso = null; // a execução que causou o conflito já terminou
+  } catch (erro) {
+    estado.erro = erro.message === "Failed to fetch" ? "Sem conexão com o servidor do dashboard. Confira se ele está ligado." : erro.message;
+  }
+  desenharCabecalho(); desenharAvisos(); desenharExecucoes(); desenharFora(); desenharFiltros(); desenharFiliais();
+  temporizador = setTimeout(carregar, ocupado() ? INTERVALO_RODANDO_MS : INTERVALO_NORMAL_MS);
+}
+
+document.getElementById("busca").addEventListener("input", (e) => { estado.busca = e.target.value; desenharFiliais(); });
+document.getElementById("ver-execucoes").addEventListener("click", () => { estado.todasExecucoes = !estado.todasExecucoes; desenharExecucoes(); });
+
+const dialogo = document.getElementById("confirmar");
+document.getElementById("rodar-todas").addEventListener("click", () => {
+  const total = estado.visao?.filiais.length ?? "";
+  document.getElementById("confirmar-texto").textContent = estado.status?.modo === "producao"
+    ? `Os CSVs de vida e empresa das filiais com aniversariantes (${total} verificadas) serão enviados ao Lookplay e substituirão os atuais na TV.`
+    : `A execução vai simular o envio das ${total} filiais. Nada será enviado ao Lookplay.`;
+  dialogo.showModal();
+});
+document.getElementById("confirmar-nao").addEventListener("click", () => dialogo.close());
+document.getElementById("confirmar-sim").addEventListener("click", () => { dialogo.close(); rodar("ambos", null); });
+
+carregar();
+</script>
+</body>
+</html>

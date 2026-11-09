@@ -1,0 +1,24 @@
+# Sobe a API + dashboard do RPA Lookplay Aniversariantes.
+#
+#   docker compose up -d --build        sobe (ou atualiza) em segundo plano
+#   docker compose logs -f              acompanha o log
+#   docker compose exec lookplay-aniversariantes python -m app.executar     envia todas as filiais
+#
+# Tudo é configurado pelo .env (mesmas variáveis do projeto). PORTA muda a porta no servidor.
+services:
+  lookplay-aniversariantes:
+    build: .
+    image: ${IMAGEM:-lookplay-aniversariantes:latest}
+    container_name: lookplay-aniversariantes
+    env_file: .env
+    environment:
+      TZ: ${TZ:-America/Cuiaba}
+      LOG_EM_ARQUIVO: "0"
+    ports:
+      - "${PORTA:-8765}:8765"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

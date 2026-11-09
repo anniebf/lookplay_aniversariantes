@@ -1,0 +1,13 @@
+# Nada de segredos, dados locais ou ambiente do Windows dentro da imagem.
+.env
+.env.*
+!.env.example
+.git
+.venv
+dados
+logs
+tests
+**/__pycache__
+.pytest_cache
+*.bat
+*.csv

@@ -1,0 +1,8 @@
+# Segredos e dados pessoais nunca entram no Git
+.env
+dados/
+logs/
+*.csv
+.venv/
+__pycache__/
+.pytest_cache/
